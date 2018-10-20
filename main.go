@@ -1,25 +1,27 @@
-// Copyright 2018 Google Inc. All rights reserved.
-// Use of this source code is governed by the Apache 2.0
-// license that can be found in the LICENSE file.
-
 package main
 
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"google.golang.org/appengine"
 )
 
-// This function's name is a must. App Engine uses it to drive the requests properly.
-func init() {
-	// Starts a new Gin instance with no middle-ware
-	r := gin.New()
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9000"
+		log.Printf("use default port: %s\n", port)
+	}
+	log.Printf("listening on port %s\n", port)
+
+	r := gin.Default()
 
 	// Define your handlers
 	r.GET("/", func(c *gin.Context) {
@@ -30,8 +32,13 @@ func init() {
 	})
 
 	r.GET("/ip", func(c *gin.Context) {
-		ip, _, _ := net.SplitHostPort(c.Request.RemoteAddr)
-		c.String(http.StatusOK, ip)
+		clientAddr := c.GetHeader("X-Forwarded-For")
+		if clientAddr == "" {
+			ip, _, _ := net.SplitHostPort(c.Request.RemoteAddr)
+			clientAddr = ip
+		}
+
+		c.String(http.StatusOK, clientAddr)
 	})
 
 	r.GET("/ua", func(c *gin.Context) {
@@ -111,12 +118,35 @@ func init() {
 		c.Status(http.StatusNoContent)
 	})
 
-	// Handle all requests using net/http
-	http.Handle("/", r)
-}
+	r.GET("/dns/:domains", func(c *gin.Context) {
+		domains := c.Param("domains")
+		resp := Resp{}
+		if domains == "" {
+			c.JSON(http.StatusOK, resp)
+			return
+		}
+		for _, domain := range strings.Split(domains, ",") {
+			ipAddrs, err := net.LookupIP(domain)
+			if err != nil {
+				resp[domain] = fmt.Sprintf("ERR: %s", err)
+				continue
+			}
 
-func main() {
-	appengine.Main()
+			var addr string
+			for _, ipAddr := range ipAddrs {
+				ipv4 := ipAddr.To4()
+				if ipv4 == nil {
+					continue
+				}
+				addr = ipv4.String()
+				break
+			}
+			resp[domain] = addr
+		}
+		c.JSON(http.StatusOK, resp)
+	})
+
+	r.Run(fmt.Sprintf(":%s", port))
 }
 
 // Resp common response struct
